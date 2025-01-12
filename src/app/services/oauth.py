@@ -113,6 +113,30 @@ class OAuthService:
 
         logger.info(f"Initiating login with provider: {provider}")
         return await oauth_client.authorize_redirect(request, redirect_uri, state=state)
+    
+    async def get_token(self, request: Request, provider: OAuthProvider, oauth_client: OAuth):
+
+        if provider == OAuthProvider.LINKEDIN:
+            authorization_code = request.query_params.get("code")
+            redirect_uri = str(request.url_for("auth_callback", provider=provider.value))
+            token_data = {
+                "grant_type": "authorization_code",
+                "code": authorization_code,
+                "redirect_uri": redirect_uri,
+                "client_id": settings.LINKEDIN_CLIENT_ID,
+                "client_secret": settings.LINKEDIN_CLIENT_SECRET,
+            }
+
+            async with httpx.AsyncClient() as client:
+                token_response = await client.post("https://www.linkedin.com/oauth/v2/accessToken", data=token_data)
+                if token_response.status_code != 200:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Failed to fetch access token: {token_response.text}"
+                    )
+                return token_response.json()
+        else:
+            return await oauth_client.authorize_access_token(request)
 
     async def handle_oauth_callback(self, provider: OAuthProvider, request: Request):
         """
@@ -139,29 +163,8 @@ class OAuthService:
         oauth_client: OAuth = self.clients.get(provider.value)
         if not oauth_client:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid provider")
-
-        if provider == OAuthProvider.LINKEDIN:
-            authorization_code = request.query_params.get("code")
-            redirect_uri = str(request.url_for("auth_callback", provider=provider.value))
-            token_data = {
-                "grant_type": "authorization_code",
-                "code": authorization_code,
-                "redirect_uri": redirect_uri,
-                "client_id": settings.LINKEDIN_CLIENT_ID,
-                "client_secret": settings.LINKEDIN_CLIENT_SECRET,
-            }
-
-            async with httpx.AsyncClient() as client:
-                token_response = await client.post("https://www.linkedin.com/oauth/v2/accessToken", data=token_data)
-                if token_response.status_code != 200:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Failed to fetch access token: {token_response.text}"
-                    )
-                token = token_response.json()
-        else:
-            token = await oauth_client.authorize_access_token(request)
-
+        
+        token = await self.get_token(request, provider, oauth_client)
         user_data = await self.fetch_user_data(oauth_client, token)
 
         if not user_data:
